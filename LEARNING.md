@@ -47,3 +47,45 @@ After each session, add 3-5 lines: what I did, why, and what I'd get wrong if qu
   - Why linear interpolation (using hour before + hour after) cannot be used on the newest live hour.
   - Why we fetch and store timestamps in `UTC` instead of Karachi local time (`Asia/Karachi`).
   - Next to test: OpenWeather Air Pollution API schema & AQI scale (1–5 vs. Open-Meteo `us_aqi` 0–500).
+
+
+### 2026-11-21 Afternoon (Deep-Dive on Open-Meteo Endpoints, Rain Probability & Backfill vs. Hourly Pipeline)
+- **Did:**
+  - Walked through all 3 Open-Meteo exploration scripts one by one (`explore_openmeteo.py`, `explore_openmeteo_historical_weather.py`, `explore_openmeteo_air_quality.py`) to understand every parameter and how each endpoint fits into training vs. live forecasting.
+- **Key findings & concepts learned:**
+  - **What `json_response["hourly"]` brings:** A dictionary of equal-length lists (`time` + each requested variable) where each index lines up across keys, so `pd.DataFrame(json_response["hourly"])` turns each key into a column and each index into an hourly row.
+  - **Forecast endpoint (`v1/forecast`) params & cutoff:**
+    - `relative_humidity_2m` is standard Humidity (%) measured at 2 meters above ground.
+    - `past_days` controls how many past full days to fetch (max `92`); in hourly live runs we use `past_days=2` (48 past hours) so 24h lags and rolling averages compute cleanly with no `NaN`s.
+    - `forecast_days=1` includes today's 24 hours (`00:00`–`23:00` UTC). Because it includes future hours of today, our code must truncate them with `df = df[df["time"] <= pd.Timestamp.now(tz="UTC").floor("h")]` (e.g., at 5:54 PM, keep rows up to 5:00 PM and drop 6:00 PM onward).
+  - **Historical Weather (`archive-api`) + Air Quality (`air-quality-api`) merge:**
+    - Archive Weather covers older months (temp, humidity, precipitation, wind speed & direction) up to ~5 days ago; Forecast `past_days` stitches on the last ~5 days.
+    - Air Quality (`air-quality-api`) has **both** history and live (`us_aqi`, `pm2_5`, `pm10`, `uv_index`) with no 5-day delay; merging it with Weather on `time` (UTC) supplies `uv_index` for every historical hour.
+  - **Rain probability without a historical `precipitation_probability` feature:** Like a spam filter, we don't need `precipitation_probability` as an input feature during training or live runs. Historical weather records whether it rained (`precipitation > 0` -> `1`, else `0`); training a classifier on that binary target and calling `predict_proba` outputs rain probability (0–100%), keeping training and live features 100% identical.
+  - **Backfill vs. Hourly Pipeline:**
+    - **Backfill:** Runs **once** at the start to load months of historical hourly rows into Hopsworks for EDA and initial model training.
+    - **Hourly Pipeline:** Runs **every hour** via GitHub Actions to append 1 new row (using ~48 past hours to compute 24h lags/rolling stats) so the Forecast Agent can predict 24h ahead.
+    - Both reuse the **exact same** cleaning, fusion, imputation, and feature-engineering code—only the date range changes.
+  - **Defensive overlap & deduplication (`Archive` + `Forecast`):**
+    - Intentionally overlap Archive Weather and Forecast Weather (`past_days=7`) by 1–2 days instead of risking a 24h gap from off-by-one/timezone bugs.
+    - Make sure both DataFrames have the exact same columns, stack with Archive first (`pd.concat([archive_df, forecast_df], ignore_index=True)`), then deduplicate (`drop_duplicates(subset=["time"], keep="first")`), sort by `time`, and check `assert df["time"].is_unique`.
+    - **Why Archive wins (`keep="first"`):** Archive (ERA5 reanalysis) is verified 2–5 days later by ECMWF using real stations, balloons, ships, and satellites—making it closer to ground truth than Forecast API's real-time run, which we only use for the newest ~5 days and live hours.
+- **Would get wrong / still unsure (review before next quiz):**
+  - Why we fetch and store timestamps in `UTC` instead of Karachi local time (`Asia/Karachi`).
+  - Next step: test **OpenWeather Air Pollution API** (`scripts/explore_openweather.py`) to finish Step 1.
+
+### 2026-11-22 (Time-Series Foundations Locked In: Shifting, Hourly Grid, Imputation & UTC)
+- **Did:**
+  - Walked through every detail of `.shift(-24)`, hourly grid reindexing (`asfreq("h")`), linear interpolation vs. forward-fill (`ffill`), UTC timestamps, and production repo layout (`src/` by pipeline stage).
+- **Key concepts locked in:**
+  - **Why & where `.shift(-24)` happens:** `model.fit(X, y)` needs today's features (`X`) and tomorrow's real answer (`y`) side-by-side on the same row. `.shift(-24)` runs in the **Training Pipeline** (and EDA), not the hourly Feature Pipeline. Every day, the newest 24 rows have `NaN` targets until the next 24 hours arrive (e.g., at Nov 21 12:00 AM, Nov 20's 24 rows have `NaN` targets; at Nov 22 12:00 AM, Nov 21's data gives Nov 20 its real targets while Nov 21's 24 rows wait with `NaN`).
+  - **Preventing missing-hour shift bugs (5-step pandas pattern):**
+    `df = df.sort_values("time").set_index("time").asfreq("h").ffill(limit=6).reset_index()`
+    (`asfreq("h")` inserts `NaN` rows for any skipped clock hours so every consecutive row is strictly 1 hour apart before computing lags, rolling averages, or `.shift(-24)`).
+  - **Linear interpolation vs. Forward-fill (`ffill(limit=6)`):**
+    - Linear interpolation draws a straight line between a point *before* and a point *after* a gap. It cannot work on the newest live hour (right now) because the future hour after it hasn't happened yet—and using it on training history peeks into the future (data leakage).
+    - `ffill(limit=6)` only uses past data (safe for both training and live with zero leakage) and caps filling at 6 hours so a long outage doesn't copy 2 PM's 36°C into 3 AM; outages > 6h fall back to the 2nd API or same-hour past average.
+  - **Why UTC everywhere:** OpenWeather, Hopsworks, and GitHub Actions all use UTC—keeping ingestion, storage, and training in UTC prevents silent 5-hour misalignment and DST bugs. Convert to `Asia/Karachi` (`UTC+5`) only for dashboard/report display.
+  - **Repo layout plan:** Keep exploration scripts in `scripts/`, and put production code under `src/` organized by pipeline stage (`ingestion/`, `features/`, `training/`, `agents/`).
+- **Next step:**
+  - Test **OpenWeather Air Pollution API** (`scripts/explore_openweather.py`) with `.env` + `python-dotenv` to finish Step 1.
