@@ -23,9 +23,9 @@ Metrics: AQI, temperature (C), precipitation (mm and rain probability), humidity
 - Dashboard: Streamlit Community Cloud, HuggingFace Spaces or Render
 
 ## My choices (fill in as decided)
-- City: [TBD]
-- Data sources and fusion strategy: [TBD]
-- Imputation strategy: [TBD]
+- City: Karachi, Pakistan (lat=24.8608, lon=67.0104; timestamps stored in UTC)
+- Data sources and fusion strategy: Open-Meteo (Weather Forecast + Historical Weather Archive + Air Quality for weather, us_aqi, uv_index, pm2_5, pm10) + OpenWeather Air Pollution API (history + live for backup pm2_5/pm10 and extra gases co, no2, o3, so2). Fusion: Source Priority (Open-Meteo primary, OpenWeather fallback via fillna on pm2_5/pm10; keep Open-Meteo us_aqi 0-500 scale separate from OpenWeather 1-5 scale; Archive wins over Forecast on 1-2 day overlap via drop_duplicates keep="first").
+- Imputation strategy: Reindex onto complete hourly UTC grid (asfreq("h")), forward-fill past-only up to 6 hours (ffill(limit=6)), fallback to secondary source or same-hour past average for gaps > 6h (no linear interpolation to avoid future leakage).
 - One model per metric or one for all six: [TBD]
 - Models chosen: [TBD]
 - LLM + fallback: [TBD]

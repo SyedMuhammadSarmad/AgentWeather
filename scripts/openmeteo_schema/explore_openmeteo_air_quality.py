@@ -8,7 +8,7 @@ params = {
 	"latitude": 24.8608,
 	"longitude": 67.0104,
 	"hourly": ["pm10", "pm2_5", "uv_index", "us_aqi"],
-    "start_date": "2026-09-21",
+    "start_date": "2025-11-21",
 	"end_date": "2026-11-21",
     "timezone":"UTC",
 }
@@ -28,6 +28,8 @@ df['time'] = pd.to_datetime(df['time'],utc = True)
 print(df.dtypes)
 
 print(df.head(3))
+
+print(len(df))
 
 print(df.isna().mean() * 100)
 

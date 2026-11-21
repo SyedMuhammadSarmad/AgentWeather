@@ -89,3 +89,21 @@ After each session, add 3-5 lines: what I did, why, and what I'd get wrong if qu
   - **Repo layout plan:** Keep exploration scripts in `scripts/`, and put production code under `src/` organized by pipeline stage (`ingestion/`, `features/`, `training/`, `agents/`).
 - **Next step:**
   - Test **OpenWeather Air Pollution API** (`scripts/explore_openweather.py`) with `.env` + `python-dotenv` to finish Step 1.
+
+### 2026-11-22 Late Night (Step 1 Complete: OpenWeather Air Pollution API & Source Fusion Locked In)
+- **Did:**
+  - Removed unused `openmeteo-requests`, `requests-cache`, and `retry-requests` from `pyproject.toml`.
+  - Stored `OPEN_WEATHER_API_KEY` safely in `.env` (gitignored) and built `scripts/open_weather_schema/explore_open_weather.py` using `https://`, `python-dotenv`, `requests` (`timeout=15`, `raise_for_status()`), and `pd.json_normalize`.
+  - Verified OpenWeather Historical Air Pollution (`/data/2.5/air_pollution/history`) for Karachi across 2 months (`1,417` hourly rows, 0 missing hours, no 5-day delay).
+- **Key findings & decisions locked in (`project-context.md`):**
+  - OpenWeather `start`/`end` require **Unix epoch seconds** (integers via `int(pd.Timestamp(..., tz="UTC").timestamp())`), and `dt` converts back via `pd.to_datetime(df["dt"], unit="s", utc=True)`.
+  - OpenWeather returns nested dicts (`dt`, `main.aqi`, `components.*`), flattened in 1 line with `pd.json_normalize(json_response["list"])`.
+  - **Scale trap caught:** OpenWeather `main.aqi` is on a **1–5 scale**, while Open-Meteo `us_aqi` is on a **0–500 US EPA scale**—never average them! Both report `pm2_5` and `pm10` in `μg/m³`.
+  - **1-year completeness check (silent row-drop proof):**
+    - OpenWeather (`2025-11-21` to `2026-11-21`): returned **`8,305`** rows instead of `8,761` (**456 hours / ~19 days silently omitted** even though `df.isna().mean() * 100` showed `0.0%`!). Proves why `asfreq("h")` is required.
+    - Open-Meteo Historical Weather (`2025-11-21` to `2026-11-15`, 360 days): **`8,640` rows** (0 skipped hours, `0.0%` `NaN`).
+    - Open-Meteo Air Quality (`2025-11-21` to `2026-11-21`, 366 days): **`8,784` rows** (0 skipped hours, `0.0%` `NaN`).
+    - Confirms **Open-Meteo primary + OpenWeather backup/extra gases** is the right choice for Karachi.
+  - **Fusion strategy decided:** **Source Priority** — Open-Meteo primary, OpenWeather fallback on `pm2_5`/`pm10` (`fillna`), plus OpenWeather extra gases (`co`, `no2`, `o3`, `so2`) as additional features.
+- **Next step:**
+  - **Step 2:** Set up **Hopsworks free tier** account/API key and build the modular Feature Pipeline under `src/`.
